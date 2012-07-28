@@ -186,7 +186,7 @@ jQuery(document).ready( function($) {
 	}
 
 	// Hierarchical taxonomies
-	$('.categorydiv').each( function(){
+	$('.categorydiv').each( function(i, el){
 		var $this = $(this), this_id = $this.attr('id'), noSyncChecks = false, syncChecks, catAddAfter, taxonomyParts, taxonomy, settingName;
 
 		taxonomyParts = this_id.split('-');
@@ -195,6 +195,7 @@ jQuery(document).ready( function($) {
  		settingName = taxonomy + '_tab';
  		if ( taxonomy == 'category' )
  			settingName = 'cats';
+ 		$this.addClass(taxonomy + '-box-' + i);
 
 		$this.find('#' + taxonomy + '-tabs a').click( function(){
 			var t = $(this).attr('href');
@@ -217,25 +218,27 @@ jQuery(document).ready( function($) {
 			if ( noSyncChecks )
 				return;
 			noSyncChecks = true;
-			var th = jQuery(this), c = th.is(':checked'), id = th.val().toString();
+			var th = $(this), c = th.is(':checked'), id = th.val().toString();
 			th.parents('.tabs-panel').siblings('.tabs-panel').find('#in-' + taxonomy + '-' + id + ', #in-' + taxonomy + '-category-' + id).prop( 'checked', c );
 			noSyncChecks = false;
 		};
 
 		catAddBefore = function( s ) {
-			var $adder_box = $(this).parent('.tabs-panel').siblings('#'+taxonomy+'-adder');
-			if ( !$adder_box.find('#new'+taxonomy).val() )
+			var $adder_box  = $(s.target).parents('#'+taxonomy+'-adder');
+			var $box = $adder_box.parents('.categorydiv');
+			if ( !$adder_box.find('#new'+taxonomy).val() || !$box.hasClass(taxonomy + '-box-' + i) )
 				return false;
-			s.data += '&' + $( ':checked', this ).serialize();
+			s.data = '_ajax_nonce=0&action=add-' + taxonomy + '&' + $adder_box.find( 'input, select' ).serialize();
+			s.data += '&' + $box.find( ':checked' ).serialize() + '&w3p_taxos_att_id=' + $box.next('[name="w3p_taxos_att_id"]').val();
 			$adder_box.find( '#' + taxonomy + '-add-submit' ).prop( 'disabled', true );
 			return s;
 		};
 
 		catAddAfter = function( r, s ) {
-			var sup, $adder_box = $(this).parent('.tabs-panel').siblings('#'+taxonomy+'-adder'), drop = $adder_box.find('#new'+taxonomy+'_parent');
+			var sup, $adder_box = $(s.target).parents('#'+taxonomy+'-adder'), drop = $adder_box.find('#new'+taxonomy+'_parent');
 
 			$adder_box.find( '#' + taxonomy + '-add-submit' ).prop( 'disabled', false );
-			if ( 'undefined' != s.parsed.responses[0] && (sup = s.parsed.responses[0].supplemental.newcat_parent) ) {
+			if ( 'undefined' != s.parsed.responses[0] && (sup = s.parsed.responses[0].supplemental.newcat_parent) && $adder_box.parents('.categorydiv').hasClass(taxonomy + '-box-' + i) ) {
 				drop.before(sup);
 				drop.remove();
 			}
@@ -261,4 +264,5 @@ jQuery(document).ready( function($) {
 		});
 
 	});
+
 });

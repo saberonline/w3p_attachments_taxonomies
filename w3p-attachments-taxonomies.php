@@ -5,7 +5,7 @@
  * Tested on WP 3.4.1. May be this script will be obsolete with WP 3.5: media management is one of possible changes in this version.
  * For feedback, feel free to leave a comment here: http://scri.in/media-taxos (sorry, my site is in french, but I can speak frenglish ;))
  *
- * Version: 1.0
+ * Version: 1.0.1
  */
 
 if ( is_admin() ):
@@ -93,6 +93,8 @@ function w3p_taxos_posts_column() {
 
 	global $wp_list_table;
 	$wp_list_table = new WP_Media_Category_List_Table;
+
+	$wp_list_table->prepare_items();
 }
 
 
@@ -179,11 +181,13 @@ function w3p_taxos_attachment_fields_to_edit($form_fields, $post) {
 		foreach ( $taxos as $tax ) {
 			if ( isset($form_fields[$tax->name]) ) {
 				ob_start();
-				if ( $tax->hierarchical )
+				if ( $tax->hierarchical ) {
 					post_categories_meta_box( $post, array( 'args' => array('taxonomy' => $tax->name) ) );
-				else
+					echo '<input type="hidden" name="w3p_taxos_att_id" value="'.$post->ID.'"/>';	// Attachment id is needed for ajax
+				} else
 					post_tags_meta_box( $post, array( 'args' => array('taxonomy' => $tax->name), 'title' => $tax->label ) );
-				$html = ob_get_clean();
+				$html = ob_get_contents();
+				ob_end_clean();
 
 				// We must add the post id in inputs name, overwise it won't work with multiple meta-boxes
 				$html = str_replace( 'tax_input['.$tax->name.']', 'tax_input['.$post->ID.']['.$tax->name.']', $html );
@@ -226,6 +230,107 @@ function w3p_taxos_attachment_fields_to_save($post, $attachment) {
 	}
 
 	return $post;
+}
+
+
+// !For hierarchical taxonomies we need an ajax filter to change the "name" attributes in the response
+add_action( 'registered_taxonomy', 'w3p_taxos_ajax_actions', 10, 3 );
+function w3p_taxos_ajax_actions($taxonomy, $object_type, $args) {
+	if ( $args['hierarchical'] == true && ($object_type = 'attachment' || strpos($object_type, 'attachment:') === 0) ) {
+		remove_filter('wp_ajax_add-' . $taxonomy, '_wp_ajax_add_hierarchical_term');
+		add_filter('wp_ajax_add-' . $taxonomy, 'w3p_taxos_wp_ajax_add_hierarchical_term');
+	}
+}
+
+
+function w3p_taxos_wp_ajax_add_hierarchical_term() {
+	$action   = $_POST['action'];
+	$taxonomy = get_taxonomy(substr($action, 4));
+	$post_id  = isset($_POST['w3p_taxos_att_id']) ? (int)$_POST['w3p_taxos_att_id'] : 0;	// Attachment id
+	check_ajax_referer( $action, '_ajax_nonce-add-' . $taxonomy->name );
+	if ( !current_user_can( $taxonomy->cap->edit_terms ) )
+		wp_die( -1 );
+	$names = explode(',', $_POST['new'.$taxonomy->name]);
+	$parent = isset($_POST['new'.$taxonomy->name.'_parent']) ? (int) $_POST['new'.$taxonomy->name.'_parent'] : 0;
+	if ( 0 > $parent )
+		$parent = 0;
+	if ( $taxonomy->name == 'category' ) {
+		if ($post_id)
+			$post_category = isset($_POST['post_category'][$post_id]) ? (array) $_POST['post_category'][$post_id] : array();
+		else
+			$post_category = isset($_POST['post_category']) ? (array) $_POST['post_category'] : array();
+	} else {
+		if ($post_id)
+			$post_category = ( isset($_POST['tax_input'][$post_id], $_POST['tax_input'][$post_id][$taxonomy->name]) ) ? (array) $_POST['tax_input'][$post_id][$taxonomy->name] : array();
+		else
+			$post_category = ( isset($_POST['tax_input'], $_POST['tax_input'][$taxonomy->name]) ) ? (array) $_POST['tax_input'][$taxonomy->name] : array();
+	}
+	$checked_categories = array_map( 'absint', (array) $post_category );
+	$popular_ids = wp_popular_terms_checklist($taxonomy->name, 0, 10, false);
+
+	foreach ( $names as $cat_name ) {
+		$cat_name = trim($cat_name);
+		$category_nicename = sanitize_title($cat_name);
+		if ( '' === $category_nicename )
+			continue;
+		if ( !$cat_id = term_exists( $cat_name, $taxonomy->name, $parent ) )
+			$cat_id = wp_insert_term( $cat_name, $taxonomy->name, array( 'parent' => $parent ) );
+		if ( is_wp_error( $cat_id ) )
+			continue;
+		else if ( is_array( $cat_id ) )
+			$cat_id = $cat_id['term_id'];
+		$checked_categories[] = $cat_id;
+		if ( $parent ) // Do these all at once in a second
+			continue;
+		ob_start();
+			wp_terms_checklist( 0, array( 'taxonomy' => $taxonomy->name, 'descendants_and_self' => $cat_id, 'selected_cats' => $checked_categories, 'popular_cats' => $popular_ids ));
+		$data = ob_get_contents();
+		ob_end_clean();
+		$add = array(
+			'what' => $taxonomy->name,
+			'id' => $cat_id,
+			'data' => str_replace( array("\n", "\t"), '', $data),
+			'position' => -1
+		);
+	}
+
+	if ( $parent ) { // Foncy - replace the parent and all its children
+		$parent = get_term( $parent, $taxonomy->name );
+		$term_id = $parent->term_id;
+
+		while ( $parent->parent ) { // get the top parent
+			$parent = &get_term( $parent->parent, $taxonomy->name );
+			if ( is_wp_error( $parent ) )
+				break;
+			$term_id = $parent->term_id;
+		}
+
+		ob_start();
+			wp_terms_checklist( 0, array('taxonomy' => $taxonomy->name, 'descendants_and_self' => $term_id, 'selected_cats' => $checked_categories, 'popular_cats' => $popular_ids));
+		$data = ob_get_contents();
+		ob_end_clean();
+		$add = array(
+			'what' => $taxonomy->name,
+			'id' => $term_id,
+			'data' => str_replace( array("\n", "\t"), '', $data),
+			'position' => -1
+		);
+	}
+
+	if ( isset($add['data']) && !empty($add['data']) )	// Need the attachemnt id in the name attribute
+		$add['data'] = str_replace( 'tax_input['.$taxonomy->name.']', 'tax_input['.$post_id.']['.$taxonomy->name.']', $add['data'] );
+
+	ob_start();
+		wp_dropdown_categories( array(
+			'taxonomy' => $taxonomy->name, 'hide_empty' => 0, 'name' => 'new'.$taxonomy->name.'_parent', 'orderby' => 'name',
+			'hierarchical' => 1, 'show_option_none' => '&mdash; '.$taxonomy->labels->parent_item.' &mdash;'
+		) );
+	$sup = ob_get_contents();
+	ob_end_clean();
+	$add['supplemental'] = array( 'newcat_parent' => $sup );
+
+	$x = new WP_Ajax_Response( $add );
+	$x->send();
 }
 
 
